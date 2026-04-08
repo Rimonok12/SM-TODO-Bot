@@ -16,6 +16,8 @@ const client = new Client({
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
+  await interaction.deferReply();
+
   const { commandName, options, guild, channel, user } = interaction;
 
   // /assign @user <task> [due_date]
@@ -25,9 +27,8 @@ client.on('interactionCreate', async (interaction) => {
     const dueDate = options.getString('due_date') || null;
 
     if (!target || !task) {
-      return interaction.reply({
+      return interaction.editReply({
         content: '❌ Please provide a user and a task.',
-        ephemeral: true,
       });
     }
 
@@ -55,7 +56,7 @@ client.on('interactionCreate', async (interaction) => {
       embed.addFields({ name: 'Due Date', value: dueDate, inline: true });
     embed.setTimestamp();
 
-    return interaction.reply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // /mytasks [status]
@@ -64,9 +65,8 @@ client.on('interactionCreate', async (interaction) => {
     const tasks = db.getTasksForUser(guild.id, user.id, status);
 
     if (tasks.length === 0) {
-      return interaction.reply({
+      return interaction.editReply({
         content: '📭 You have no tasks.',
-        ephemeral: true,
       });
     }
 
@@ -83,7 +83,7 @@ client.on('interactionCreate', async (interaction) => {
       .setFooter({ text: `${tasks.length} task(s)` })
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed], ephemeral: true });
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // /alltasks [status]
@@ -92,9 +92,8 @@ client.on('interactionCreate', async (interaction) => {
     const tasks = db.getAllTasks(guild.id, status);
 
     if (tasks.length === 0) {
-      return interaction.reply({
+      return interaction.editReply({
         content: '📭 No tasks found.',
-        ephemeral: true,
       });
     }
 
@@ -113,7 +112,7 @@ client.on('interactionCreate', async (interaction) => {
       })
       .setTimestamp();
 
-    return interaction.reply({ embeds: [embed] });
+    return interaction.editReply({ embeds: [embed] });
   }
 
   // /done <task_id>
@@ -122,17 +121,15 @@ client.on('interactionCreate', async (interaction) => {
     const task = db.getTaskById(taskId, guild.id);
 
     if (!task) {
-      return interaction.reply({
+      return interaction.editReply({
         content: `❌ Task #${taskId} not found.`,
-        ephemeral: true,
       });
     }
 
     // Only the assigned person or the assigner can mark it done
     if (task.assigned_to !== user.id && task.assigned_by !== user.id) {
-      return interaction.reply({
+      return interaction.editReply({
         content: '❌ You can only complete tasks assigned to or by you.',
-        ephemeral: true,
       });
     }
 
@@ -147,11 +144,10 @@ client.on('interactionCreate', async (interaction) => {
           { name: 'Completed By', value: `<@${user.id}>`, inline: true },
         )
         .setTimestamp();
-      return interaction.reply({ embeds: [embed] });
+      return interaction.editReply({ embeds: [embed] });
     }
-    return interaction.reply({
+    return interaction.editReply({
       content: '❌ Could not complete that task.',
-      ephemeral: true,
     });
   }
 
@@ -161,26 +157,25 @@ client.on('interactionCreate', async (interaction) => {
     const task = db.getTaskById(taskId, guild.id);
 
     if (!task) {
-      return interaction.reply({
+      return interaction.editReply({
         content: `❌ Task #${taskId} not found.`,
-        ephemeral: true,
       });
     }
 
     if (task.assigned_by !== user.id) {
-      return interaction.reply({
+      return interaction.editReply({
         content: '❌ Only the person who created the task can delete it.',
-        ephemeral: true,
       });
     }
 
     const success = db.deleteTask(taskId, guild.id);
     if (success) {
-      return interaction.reply({ content: `🗑️ Task **#${taskId}** deleted.` });
+      return interaction.editReply({
+        content: `🗑️ Task **#${taskId}** deleted.`,
+      });
     }
-    return interaction.reply({
+    return interaction.editReply({
       content: '❌ Could not delete that task.',
-      ephemeral: true,
     });
   }
 });
@@ -262,6 +257,9 @@ client.once('ready', () => {
 // ─── HTTP HEALTH SERVER (required for Azure App Service) ────────────────────
 const http = require('http');
 const PORT = process.env.PORT || 8080;
+const RENDER_URL =
+  process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+
 http
   .createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -270,5 +268,17 @@ http
   .listen(PORT, () => {
     console.log(`   Health server on port ${PORT}`);
   });
+
+// ─── KEEP-ALIVE PING (prevents Render free tier from sleeping) ──────────────
+setInterval(
+  () => {
+    http
+      .get(RENDER_URL, (res) => {
+        res.resume();
+      })
+      .on('error', () => {});
+  },
+  4 * 60 * 1000,
+); // ping every 4 minutes
 
 client.login(process.env.DISCORD_TOKEN);
