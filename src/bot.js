@@ -7,17 +7,66 @@ const {
 } = require('discord.js');
 const db = require('./database');
 
+// NOTE: GuildMessages + MessageContent are *privileged* intents required for
+// the @-mention message detection feature. Enable them in the Discord
+// Developer Portal (Bot tab → Privileged Gateway Intents) and then add them
+// here:
+//   GatewayIntentBits.GuildMessages,
+//   GatewayIntentBits.MessageContent,
+// Until they're enabled in the portal, requesting them here will make
+// client.login() fail with "Used disallowed intents" and the bot will not
+// come online at all — so we keep only the Guilds intent by default. Slash
+// commands work fine with just this.
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
   partials: [Partials.Channel],
 });
 
+// Pre-initialize the database synchronously at startup so the very first
+// interaction does not pay the cost of opening the DB / creating the table
+// (which can push us past Discord's 3-second ack window).
+try {
+  db.getAllTasks('__warmup__');
+} catch (e) {
+  console.error('DB warmup failed:', e);
+}
+
+// Surface unhandled errors instead of silently dying.
+process.on('unhandledRejection', (err) =>
+  console.error('unhandledRejection:', err),
+);
+process.on('uncaughtException', (err) =>
+  console.error('uncaughtException:', err),
+);
+client.on('error', (err) => console.error('client error:', err));
+
 // ─── SLASH COMMAND HANDLER ──────────────────────────────────────────────────
 client.on('interactionCreate', async (interaction) => {
   if (!interaction.isChatInputCommand()) return;
 
-  await interaction.deferReply();
+  // Ack as fast as possible so Discord doesn't show "did not respond".
+  try {
+    await interaction.deferReply();
+  } catch (e) {
+    console.error('deferReply failed:', e);
+    return;
+  }
 
+  try {
+    await handleCommand(interaction);
+  } catch (e) {
+    console.error('command handler error:', e);
+    try {
+      await interaction.editReply({
+        content: '❌ Something went wrong handling that command.',
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+});
+
+async function handleCommand(interaction) {
   const { commandName, options, guild, channel, user } = interaction;
 
   // /assign @user <task> [due_date]
@@ -178,7 +227,7 @@ client.on('interactionCreate', async (interaction) => {
       content: '❌ Could not delete that task.',
     });
   }
-});
+}
 
 // ─── MESSAGE-BASED TASK DETECTION ───────────────────────────────────────────
 // Detects: @TodoBot @SomeUser fix the login bug [by tomorrow]
@@ -254,26 +303,44 @@ client.once('ready', () => {
   console.log(`   Servers: ${client.guilds.cache.size}`);
 });
 
-// ─── HTTP HEALTH SERVER (required for Azure App Service) ────────────────────
+// ─── HTTP HEALTH SERVER (required for Azure App Service / Render) ──────────
 const http = require('http');
+const https = require('https');
 const PORT = process.env.PORT || 8080;
-const RENDER_URL =
-  process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
+// Azure App Service exposes WEBSITE_HOSTNAME; Render exposes RENDER_EXTERNAL_URL.
+const SELF_URL =
+  process.env.RENDER_EXTERNAL_URL ||
+  (process.env.WEBSITE_HOSTNAME
+    ? `https://${process.env.WEBSITE_HOSTNAME}`
+    : `http://localhost:${PORT}`);
 
 http
   .createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('SM TODO BOT is running');
   })
+  .on('error', (err) => {
+    // Don't crash the bot just because the health port is busy — log and
+    // continue. The Discord client is what actually matters.
+    if (err.code === 'EADDRINUSE') {
+      console.error(
+        `   ⚠️  Health server port ${PORT} is already in use — skipping. ` +
+          `Set PORT=<other> if you need it.`,
+      );
+    } else {
+      console.error('   ⚠️  Health server error:', err);
+    }
+  })
   .listen(PORT, () => {
     console.log(`   Health server on port ${PORT}`);
   });
 
-// ─── KEEP-ALIVE PING (prevents Render free tier from sleeping) ──────────────
+// ─── KEEP-ALIVE PING (prevents free-tier sleep on Render / Azure) ──────────
 setInterval(
   () => {
-    http
-      .get(RENDER_URL, (res) => {
+    const lib = SELF_URL.startsWith('https') ? https : http;
+    lib
+      .get(SELF_URL, (res) => {
         res.resume();
       })
       .on('error', () => {});
