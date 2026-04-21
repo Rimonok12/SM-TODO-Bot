@@ -303,49 +303,30 @@ client.once('ready', () => {
   console.log(`   Servers: ${client.guilds.cache.size}`);
 });
 
-// ─── HTTP HEALTH SERVER (required for Azure App Service / Render) ──────────
-const http = require('http');
-const https = require('https');
-const PORT = process.env.PORT || 8080;
-// Azure App Service exposes WEBSITE_HOSTNAME; Render exposes RENDER_EXTERNAL_URL.
-const SELF_URL =
-  process.env.RENDER_EXTERNAL_URL ||
-  (process.env.WEBSITE_HOSTNAME
-    ? `https://${process.env.WEBSITE_HOSTNAME}`
-    : `http://localhost:${PORT}`);
-
-http
-  .createServer((req, res) => {
-    res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('SM TODO BOT is running');
-  })
-  .on('error', (err) => {
-    // Don't crash the bot just because the health port is busy — log and
-    // continue. The Discord client is what actually matters.
-    if (err.code === 'EADDRINUSE') {
-      console.error(
-        `   ⚠️  Health server port ${PORT} is already in use — skipping. ` +
-          `Set PORT=<other> if you need it.`,
-      );
-    } else {
-      console.error('   ⚠️  Health server error:', err);
-    }
-  })
-  .listen(PORT, () => {
-    console.log(`   Health server on port ${PORT}`);
-  });
-
-// ─── KEEP-ALIVE PING (prevents free-tier sleep on Render / Azure) ──────────
-setInterval(
-  () => {
-    const lib = SELF_URL.startsWith('https') ? https : http;
-    lib
-      .get(SELF_URL, (res) => {
-        res.resume();
-      })
-      .on('error', () => {});
-  },
-  4 * 60 * 1000,
-); // ping every 4 minutes
+// ─── OPTIONAL HTTP HEALTH SERVER ───────────────────────────────────────────
+// Only started if a PORT env var is set (e.g. a Web Service host like Azure
+// App Service or Render Web Service). Background Workers (Render) don't set
+// PORT and don't need this — skipping it avoids needless port binding.
+if (process.env.PORT) {
+  const http = require('http');
+  const PORT = process.env.PORT;
+  http
+    .createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end('SM TODO BOT is running');
+    })
+    .on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(
+          `   ⚠️  Health server port ${PORT} is already in use — skipping.`,
+        );
+      } else {
+        console.error('   ⚠️  Health server error:', err);
+      }
+    })
+    .listen(PORT, () => {
+      console.log(`   Health server on port ${PORT}`);
+    });
+}
 
 client.login(process.env.DISCORD_TOKEN);
